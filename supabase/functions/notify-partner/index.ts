@@ -92,6 +92,33 @@ Deno.serve(async (req) => {
     const uid = userData.user.id;
     const body = await req.json().catch(() => ({}));
 
+    // ----- создать код привязки для бота -----
+    if (body.action === "create_link_code") {
+      const code = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+      const { error } = await admin.from("telegram_link_codes").insert({
+        code,
+        user_id: uid,
+        expires_at: expiresAt,
+      });
+
+      if (error) throw error;
+
+      return json({ code });
+    }
+
+    // ----- проверить, привязан ли Telegram -----
+    if (body.action === "link_status") {
+      const { data } = await admin
+        .from("telegram_links")
+        .select("telegram_id")
+        .eq("user_id", uid)
+        .maybeSingle();
+
+      return json({ linked: data !== null });
+    }
+
     // ----- привязка Telegram к аккаунту -----
     if (body.action === "link") {
       const tg = await verifyInitData(String(body.initData ?? ""));
