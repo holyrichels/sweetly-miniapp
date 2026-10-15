@@ -1,4 +1,4 @@
-// Webhook бота: /start и /start <код привязки>.
+// Webhook бота: /start, /start <код> и код, отправленный обычным сообщением.
 // Telegram вызывает эту функцию сам, поэтому деплоим с --no-verify-jwt.
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -14,28 +14,55 @@ async function sendMessage(chatId: number, text: string) {
   });
 }
 
+// Код привязки: 16 символов из букв и цифр
+const CODE_PATTERN = /^[a-zA-Z0-9]{16}$/;
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("ok");
 
   const update = await req.json().catch(() => null);
   const message = update?.message;
-  const text: string = message?.text ?? "";
+  const text: string = (message?.text ?? "").trim();
 
-  if (!text.startsWith("/start")) return new Response("ok");
+  if (!text) return new Response("ok");
 
   const chatId: number = message.chat.id;
-  const payload = text.split(" ")[1]?.trim();
+
+  if (text.startsWith("/help")) {
+    await sendMessage(
+      chatId,
+      "Как подключить уведомления:\n\n1. Откройте Sweetly и зайдите в «Настройки».\n2. Нажмите «Telegram».\n3. Отправьте мне код, который там появится, или нажмите «Открыть Telegram».",
+    );
+
+    return new Response("ok");
+  }
+
+  // Код можно прислать как /start <код>, либо просто сообщением
+  let payload: string | undefined;
+
+  if (text.startsWith("/start")) {
+    payload = text.split(/\s+/)[1];
+  } else if (CODE_PATTERN.test(text)) {
+    payload = text;
+  } else {
+    await sendMessage(
+      chatId,
+      "Привет! Я Sweetly ❤️\n\nЧтобы получать уведомления от партнёра, откройте приложение, зайдите в «Настройки» и нажмите «Telegram». Там будет код, его можно отправить мне сообщением.",
+    );
+
+    return new Response("ok");
+  }
 
   // Обычный /start без кода
   if (!payload) {
     await sendMessage(
       chatId,
-      "Привет! Я Sweetly ❤️\n\nОткрой приложение, зайди в «Настройки» и нажми «Telegram», чтобы я начал присылать уведомления от партнёра.",
+      "Привет! Я Sweetly ❤️\n\nОткройте приложение, зайдите в «Настройки» и нажмите «Telegram», чтобы я начал присылать уведомления от партнёра.",
     );
+
     return new Response("ok");
   }
 
-  // /start с кодом привязки из приложения
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
@@ -49,14 +76,16 @@ Deno.serve(async (req) => {
   if (!codeRow || new Date(codeRow.expires_at) < new Date()) {
     await sendMessage(
       chatId,
-      "Ссылка устарела. Открой приложение, зайди в «Настройки» и нажми «Telegram» ещё раз.",
+      "Код не подошёл или устарел. Откройте приложение, зайдите в «Настройки» и нажмите «Telegram» ещё раз.",
     );
+
     return new Response("ok");
   }
 
   const { error } = await admin.from("telegram_links").upsert(
     {
       telegram_id: message.from.id,
+      telegram_username: message.from.username ?? null,
       user_id: codeRow.user_id,
       updated_at: new Date().toISOString(),
     },
@@ -64,16 +93,14 @@ Deno.serve(async (req) => {
   );
 
   if (error) {
-    await sendMessage(chatId, "Не получилось привязать аккаунт. Попробуй ещё раз.");
+    await sendMessage(chatId, "Не получилось привязать аккаунт. Попробуйте ещё раз.");
+
     return new Response("ok");
   }
 
   await admin.from("telegram_link_codes").delete().eq("code", payload);
 
-  await sendMessage(
-    chatId,
-    "Готово! Теперь я буду присылать уведомления от партнёра ❤️",
-  );
+  await sendMessage(chatId, "Готово! Теперь я буду присылать уведомления от партнёра ❤️");
 
   return new Response("ok");
 });

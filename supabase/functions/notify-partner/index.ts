@@ -173,7 +173,10 @@ Deno.serve(async (req) => {
       // Принимаем только короткий эмодзи, чтобы в сообщение нельзя было подставить произвольный текст
       const mood = String(body.mood ?? "");
       if (mood.length === 0 || mood.length > 8) return json({ error: "bad mood" }, 400);
-      text = `${name} сейчас в настроении ${mood}`;
+      const note = String(body.note ?? "").trim().slice(0, 140);
+      text = note
+        ? `${name} сейчас в настроении ${mood}\n\n«${note}»`
+        : `${name} сейчас в настроении ${mood}`;
     } else {
       return json({ error: "unknown kind" }, 400);
     }
