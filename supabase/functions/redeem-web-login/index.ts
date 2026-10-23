@@ -1,3 +1,8 @@
+declare const Deno: {
+  env: { get(name: string): string | undefined };
+  serve(handler: (req: Request) => Response | Promise<Response>): void;
+};
+
 // Вызывается из браузера: проверяет одноразовый код и отдаёт токен входа.
 // Деплоим с --no-verify-jwt: вход ещё не выполнен.
 import { createClient } from "npm:@supabase/supabase-js@2";
