@@ -5,7 +5,6 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -24,20 +23,22 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
 
+  let stage = "authenticate_user";
+
   try {
-    const userClient = createClient(SUPABASE_URL, ANON_KEY, {
-      global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
-
-    const { data: userData, error: authError } = await userClient.auth.getUser();
-
-    if (authError || !userData.user) return json({ error: "unauthorized" }, 401);
+    const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "");
+    if (!token) return json({ error: "unauthorized" }, 401);
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
+    stage = "verify_user";
+    const { data: userData, error: authError } = await admin.auth.getUser(token);
+
+    if (authError || !userData.user) return json({ error: "unauthorized" }, 401);
+
+    stage = "lookup_telegram_link";
     const { data: link, error: linkError } = await admin
       .from("telegram_links")
       .select("telegram_id")
@@ -47,6 +48,7 @@ Deno.serve(async (req) => {
     if (linkError) throw linkError;
     if (!link) return json({ error: "not linked" }, 400);
 
+    stage = "generate_code";
     // 8 символов без похожих (0, O, 1, I)
     const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -54,6 +56,7 @@ Deno.serve(async (req) => {
 
     const code = Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join("");
 
+    stage = "delete_previous_code";
     // Старые коды этого пользователя больше не действуют
     const { error: deleteError } = await admin
       .from("web_login_codes")
@@ -62,6 +65,7 @@ Deno.serve(async (req) => {
 
     if (deleteError) throw deleteError;
 
+    stage = "insert_code";
     const { error: insertError } = await admin.from("web_login_codes").insert({
       code,
       user_id: userData.user.id,
@@ -70,6 +74,7 @@ Deno.serve(async (req) => {
 
     if (insertError) throw insertError;
 
+    stage = "send_telegram_message";
     const telegramResponse = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -88,7 +93,7 @@ Deno.serve(async (req) => {
     // Код возвращаем Mini App, чтобы он подставился в ссылку браузера
     return json({ sent: true, code });
   } catch (error) {
-    console.error("request-web-login failed:", error);
-    return json({ error: "internal error" }, 500);
+    console.error(`request-web-login failed at ${stage}:`, error);
+    return json({ error: "internal error", stage }, 500);
   }
 });
