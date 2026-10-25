@@ -34,9 +34,13 @@ export async function signInWithTelegram(): Promise<void> {
     throw new Error(result.error ?? "Ошибка входа");
   }
 
-  const { error } = await supabase.auth.signInWithPassword({
-    email: result.email,
-    password: result.password,
+  if (!result.linked || typeof result.token_hash !== "string") {
+    throw new Error("Сначала привяжите Telegram к аккаунту Sweetly");
+  }
+
+  const { error } = await supabase.auth.verifyOtp({
+    token_hash: result.token_hash,
+    type: "magiclink",
   });
 
   if (error) throw error;

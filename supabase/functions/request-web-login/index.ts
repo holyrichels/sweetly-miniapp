@@ -6,6 +6,8 @@ const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+const encoder = new TextEncoder();
+
 const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -17,6 +19,21 @@ function json(body: unknown, status = 200) {
     status,
     headers: { ...cors, "Content-Type": "application/json" },
   });
+}
+
+async function hashSecret(value: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(SERVICE_ROLE_KEY),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(value));
+
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 Deno.serve(async (req) => {
@@ -55,24 +72,21 @@ Deno.serve(async (req) => {
     const bytes = crypto.getRandomValues(new Uint8Array(8));
 
     const code = Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join("");
+    const codeHash = await hashSecret(`web-login-code:${code}`);
 
-    stage = "invalidate_previous_codes";
-    // Старые коды этого пользователя больше не действуют
-    const { error: invalidateError } = await admin
-      .from("web_login_codes")
-      .update({ used: true })
-      .eq("user_id", userData.user.id);
+    stage = "store_code";
+    const { data: issued, error: issueError } = await admin.rpc(
+      "issue_web_login_code",
+      { p_user_id: userData.user.id, p_code_hash: codeHash },
+    );
 
-    if (invalidateError) throw invalidateError;
-
-    stage = "insert_code";
-    const { error: insertError } = await admin.from("web_login_codes").insert({
-      code,
-      user_id: userData.user.id,
-      expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-    });
-
-    if (insertError) throw insertError;
+    if (issueError) throw issueError;
+    if (!issued) {
+      return json(
+        { error: "code request rate limited", retry_after_seconds: 30 },
+        429,
+      );
+    }
 
     stage = "send_telegram_message";
     const telegramResponse = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -83,9 +97,16 @@ Deno.serve(async (req) => {
         text: `Код для входа в Sweetly: ${code}\n\nДействует 10 минут. Никому его не сообщайте.`,
       }),
     });
-    const telegramResult = await telegramResponse.json();
+    const telegramResult = await telegramResponse.json().catch(() => null);
 
     if (!telegramResponse.ok || telegramResult.ok !== true) {
+      const { error: revokeError } = await admin.rpc(
+        "revoke_web_login_code",
+        { p_code_hash: codeHash },
+      );
+      if (revokeError) {
+        console.error("Could not revoke undelivered web login code:", revokeError);
+      }
       console.error("Telegram sendMessage failed:", telegramResult);
       return json({ error: "telegram delivery failed" }, 502);
     }
