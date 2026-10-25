@@ -56,14 +56,14 @@ Deno.serve(async (req) => {
 
     const code = Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join("");
 
-    stage = "delete_previous_code";
+    stage = "invalidate_previous_codes";
     // Старые коды этого пользователя больше не действуют
-    const { error: deleteError } = await admin
+    const { error: invalidateError } = await admin
       .from("web_login_codes")
-      .delete()
+      .update({ used: true })
       .eq("user_id", userData.user.id);
 
-    if (deleteError) throw deleteError;
+    if (invalidateError) throw invalidateError;
 
     stage = "insert_code";
     const { error: insertError } = await admin.from("web_login_codes").insert({
